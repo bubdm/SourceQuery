@@ -8,7 +8,7 @@ namespace SourceQuery.Sample
     {
         public static async Task Main(string[] args)
         {
-            var addresses = Dns.GetHostAddresses("172.20.32.1");
+            var addresses = Dns.GetHostAddresses("208.103.169.142");
             if (addresses.Length < 1)
             {
                 Console.WriteLine("Failed to find IP address.");

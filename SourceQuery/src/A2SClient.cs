@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Threading.Tasks;
 using ICSharpCode.SharpZipLib.BZip2;
 using ICSharpCode.SharpZipLib.Checksum;
+using SourceQuery.Response;
 
 namespace SourceQuery
 {
@@ -17,7 +18,7 @@ namespace SourceQuery
         public IPAddress Address { get; set; }
         public int Port { get; set; } = 27015;
     }
-    
+
     /// <summary>
     /// Provides communication with a Source Engine server using A2S queries. 
     /// </summary>
@@ -25,7 +26,7 @@ namespace SourceQuery
     {
         private readonly UdpClient _udpClient;
         private IPEndPoint _endpoint;
-        
+
         private readonly A2SClientOptions _options;
 
         /// <summary>
@@ -48,14 +49,12 @@ namespace SourceQuery
 
             var data = new byte[]
             {
-                0xff, 0xff, 0xff, 0xff, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75,
+                0xff, 0xff, 0xff, 0xff, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E,
+                0x65, 0x20, 0x51, 0x75,
                 0x65, 0x72, 0x79, 0x00
             };
             await _udpClient.SendAsync(data, data.Length);
             var bytes = await Receive();
-            
-            foreach (var b in bytes)
-                Console.WriteLine($"0x{b:X2}"); 
         }
 
         /// <summary>
@@ -66,20 +65,25 @@ namespace SourceQuery
             _udpClient.Close();
         }
 
+        /// <summary>
+        /// Reads one or more packets from the server host.
+        /// </summary>
+        /// <returns>All of the data inside the packets payload sections combined.</returns>
+        /// <exception cref="Exception"></exception>
         public async Task<byte[]> Receive()
         {
             byte[][] packets = null;
             int packetCount = 1, packetIndex = 0;
-            
-            bool isCompressed = false;
-            int crc = 0;
+
+            var isCompressed = false;
+            var crc = 0;
 
             do
             {
                 // Read the packet the UDP client.
                 var result = await _udpClient.ReceiveAsync();
                 var reader = new BinaryReader(new MemoryStream(result.Buffer));
-                
+
                 // Check if the packet is split.
                 if (reader.ReadInt32() == -2)
                 {
@@ -91,6 +95,9 @@ namespace SourceQuery
                     packetCount = reader.ReadByte();
                     packetIndex = reader.ReadByte();
 
+                    // Read the split size.
+                    reader.ReadInt16();
+
                     if (isCompressed && packetIndex == 0)
                     {
                         reader.ReadInt32();
@@ -99,33 +106,34 @@ namespace SourceQuery
                 }
 
                 // Initialize the packets array.
-                
                 packets ??= new byte[packetCount][];
-                
+
                 // Set the current packet.
-                packets[packetIndex] = result.Buffer;
+                var payload = new byte[result.Buffer.Length - reader.BaseStream.Position];
+                Buffer.BlockCopy(result.Buffer, (int) reader.BaseStream.Position, payload, 0, payload.Length);
+                packets[packetIndex] = payload;
             } while (packets.Any(packet => packet == null));
-            
+
             // Combine all the packets into one byte array.
             int size = packets.Sum(packet => packet.Length);
             var data = new byte[size];
-            
+
             var offset = 0;
             foreach (var packet in packets)
             {
                 Buffer.BlockCopy(packet, 0, data, offset, packet.Length);
                 offset += packet.Length;
             }
-            
+
             // Decompress the data.
             if (isCompressed)
             {
                 var compressedStream = new MemoryStream(data);
                 var decompressedStream = new MemoryStream();
-                
+
                 BZip2.Decompress(compressedStream, decompressedStream, true);
                 data = decompressedStream.ToArray();
-                
+
                 var crc32 = new Crc32();
                 crc32.Update(data);
                 if (crc32.Value != crc) throw new Exception("Invalid CRC for compressed packet.");
